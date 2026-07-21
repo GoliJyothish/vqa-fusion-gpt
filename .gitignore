@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+env/
+.venv/
+data/clevr_download/
+data/clevr_subset/images/
+data/clevr_subset/vocab.json
+*.pt
+results/*/model.pt
+.env
+.DS_Store
