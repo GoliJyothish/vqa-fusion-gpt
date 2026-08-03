@@ -74,6 +74,7 @@ def train(config_path: str):
         fusion=cfg["fusion"],
         vision_backbone=cfg["vision_backbone"],
         freeze_vision=cfg["freeze_vision"],
+        dropout=cfg.get("dropout", 0.1),
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -84,6 +85,8 @@ def train(config_path: str):
     out_dir = Path(cfg["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     history = {"train_loss": [], "val_loss": []}
+    best_val_loss = float("inf")
+    best_epoch = -1
 
     for epoch in range(cfg["epochs"]):
         model.train()
@@ -120,11 +123,19 @@ def train(config_path: str):
         history["val_loss"].append(avg_val_loss)
         print(f"Epoch {epoch+1}/{cfg['epochs']} | train_loss={avg_train_loss:.4f} | val_loss={avg_val_loss:.4f}")
 
-    torch.save(model.state_dict(), out_dir / "model.pt")
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_epoch = epoch + 1
+            torch.save(model.state_dict(), out_dir / "model_best.pt")
+
+    torch.save(model.state_dict(), out_dir / "model.pt")  # final-epoch checkpoint
+    history["best_val_loss"] = best_val_loss
+    history["best_epoch"] = best_epoch
     with open(out_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    print(f"Done. Model + history saved to {out_dir}")
+    print(f"Done. Final model saved to {out_dir}/model.pt")
+    print(f"Best model (val_loss={best_val_loss:.4f} at epoch {best_epoch}) saved to {out_dir}/model_best.pt")
 
 
 if __name__ == "__main__":

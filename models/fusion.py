@@ -22,6 +22,7 @@ class VQAFusionModel(nn.Module):
         fusion: str = "concat",
         vision_backbone: str = "resnet18",
         freeze_vision: bool = True,
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.vision_encoder = VisionEncoder(
@@ -34,6 +35,7 @@ class VQAFusionModel(nn.Module):
             n_heads=n_heads,
             max_seq_len=max_seq_len,
             fusion=fusion,
+            dropout=dropout,
         )
 
     def forward(self, images, token_ids):

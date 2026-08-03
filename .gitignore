@@ -11,3 +11,4 @@ data/clevr_subset/vocab.json
 results/*/model.pt
 .env
 .DS_Store
+clevr_images.zip

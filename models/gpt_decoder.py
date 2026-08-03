@@ -14,13 +14,14 @@ import torch.nn as nn
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim: int, n_heads: int):
+    def __init__(self, dim: int, n_heads: int, dropout: float = 0.1):
         super().__init__()
         assert dim % n_heads == 0
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
         self.qkv = nn.Linear(dim, dim * 3)
         self.out = nn.Linear(dim, dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, causal_mask=None):
         b, t, d = x.shape
@@ -30,6 +31,7 @@ class SelfAttention(nn.Module):
         if causal_mask is not None:
             attn = attn.masked_fill(causal_mask == 0, float("-inf"))
         attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
         out = attn @ v
         out = out.transpose(1, 2).reshape(b, t, d)
         return self.out(out)
@@ -38,7 +40,7 @@ class SelfAttention(nn.Module):
 class CrossAttention(nn.Module):
     """Text tokens (queries) attend to image features (keys/values)."""
 
-    def __init__(self, dim: int, n_heads: int):
+    def __init__(self, dim: int, n_heads: int, dropout: float = 0.1):
         super().__init__()
         assert dim % n_heads == 0
         self.n_heads = n_heads
@@ -46,6 +48,7 @@ class CrossAttention(nn.Module):
         self.q_proj = nn.Linear(dim, dim)
         self.kv_proj = nn.Linear(dim, dim * 2)
         self.out = nn.Linear(dim, dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, image_features):
         b, t, d = x.shape
@@ -57,28 +60,31 @@ class CrossAttention(nn.Module):
 
         attn = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
         out = attn @ v
         out = out.transpose(1, 2).reshape(b, t, d)
         return self.out(out)
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, dim: int, n_heads: int, use_cross_attn: bool = False):
+    def __init__(self, dim: int, n_heads: int, use_cross_attn: bool = False, dropout: float = 0.1):
         super().__init__()
         self.use_cross_attn = use_cross_attn
 
         self.ln1 = nn.LayerNorm(dim)
-        self.self_attn = SelfAttention(dim, n_heads)
+        self.self_attn = SelfAttention(dim, n_heads, dropout=dropout)
 
         if use_cross_attn:
             self.ln_cross = nn.LayerNorm(dim)
-            self.cross_attn = CrossAttention(dim, n_heads)
+            self.cross_attn = CrossAttention(dim, n_heads, dropout=dropout)
 
         self.ln2 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
             nn.Linear(dim, dim * 4),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(dim * 4, dim),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x, causal_mask=None, image_features=None):
@@ -101,6 +107,7 @@ class GPTDecoder(nn.Module):
         n_heads: int = 4,
         max_seq_len: int = 64,
         fusion: str = "concat",  # "concat" or "cross_attn"
+        dropout: float = 0.1,
     ):
         super().__init__()
         assert fusion in ("concat", "cross_attn")
@@ -109,10 +116,11 @@ class GPTDecoder(nn.Module):
 
         self.token_emb = nn.Embedding(vocab_size, dim)
         self.pos_emb = nn.Embedding(max_seq_len, dim)
+        self.emb_dropout = nn.Dropout(dropout)
 
         use_cross = fusion == "cross_attn"
         self.blocks = nn.ModuleList(
-            [DecoderBlock(dim, n_heads, use_cross_attn=use_cross) for _ in range(n_layers)]
+            [DecoderBlock(dim, n_heads, use_cross_attn=use_cross, dropout=dropout) for _ in range(n_layers)]
         )
 
         self.ln_f = nn.LayerNorm(dim)
@@ -127,6 +135,7 @@ class GPTDecoder(nn.Module):
         b, t = token_ids.shape
         pos = torch.arange(t, device=token_ids.device).unsqueeze(0)
         x = self.token_emb(token_ids) + self.pos_emb(pos)
+        x = self.emb_dropout(x)
 
         if self.fusion == "concat" and image_features is not None:
             x = torch.cat([image_features, x], dim=1)

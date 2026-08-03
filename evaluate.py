@@ -21,7 +21,7 @@ from train import load_config, get_tokenizer
 
 
 @torch.no_grad()
-def evaluate_accuracy(cfg: dict, device: torch.device) -> float:
+def evaluate_accuracy(cfg: dict, device: torch.device, checkpoint: str = "model_best.pt") -> float:
     tokenizer = get_tokenizer(cfg["data_root"])
     cfg["vocab_size"] = tokenizer.vocab_size
     val_ds = CLEVRVQADataset(
@@ -38,8 +38,9 @@ def evaluate_accuracy(cfg: dict, device: torch.device) -> float:
         fusion=cfg["fusion"],
         vision_backbone=cfg["vision_backbone"],
         freeze_vision=cfg["freeze_vision"],
+        dropout=cfg.get("dropout", 0.1),
     ).to(device)
-    model.load_state_dict(torch.load(Path(cfg["output_dir"]) / "model.pt", map_location=device))
+    model.load_state_dict(torch.load(Path(cfg["output_dir"]) / checkpoint, map_location=device))
     model.eval()
 
     correct, total = 0, 0
