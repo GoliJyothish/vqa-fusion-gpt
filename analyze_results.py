@@ -1,8 +1,10 @@
 """
 Breaks down accuracy by question type (counting, color, yes/no, etc.) and
 generates qualitative examples (image + question + predicted vs true answer)
-for both fusion strategies. Produces the kind of detailed analysis that
-goes well beyond a single overall accuracy number.
+for both fusion strategies.
+
+IMPORTANT: scores only the actual answer token (position 1, right after
+BOS), not the whole padded sequence — see evaluate.py for why.
 
 Usage:
     python analyze_results.py --compare configs/concat_fusion.yaml configs/cross_attn_fusion.yaml
@@ -21,14 +23,10 @@ from models.fusion import VQAFusionModel
 from data.clevr_dataset import CLEVRVQADataset
 from train import load_config, get_tokenizer
 
+ANSWER_POSITION = 1  # index right after BOS token
+
 
 def classify_question(question: str) -> str:
-    """
-    Lightweight rule-based question-type classifier based on CLEVR's
-    common question phrasings. Not as precise as using the ground-truth
-    'program' field, but requires no extra parsing and is transparent
-    to explain in a report.
-    """
     q = question.lower().strip()
     if q.startswith("how many"):
         return "counting"
@@ -52,7 +50,8 @@ def classify_question(question: str) -> str:
 @torch.no_grad()
 def run_analysis(cfg: dict, device: torch.device, checkpoint: str = "model_best.pt", n_examples: int = 8):
     tokenizer = get_tokenizer(cfg["data_root"])
-    cfg["vocab_size"] = tokenizer.vocab_size  # match checkpoint vocab size
+    cfg["vocab_size"] = tokenizer.vocab_size
+
     val_ds = CLEVRVQADataset(
         cfg["data_root"], "val", tokenizer, image_size=cfg["image_size"], max_len=cfg["max_seq_len"]
     )
@@ -72,7 +71,6 @@ def run_analysis(cfg: dict, device: torch.device, checkpoint: str = "model_best.
     model.load_state_dict(torch.load(Path(cfg["output_dir"]) / checkpoint, map_location=device))
     model.eval()
 
-    # Reload raw questions (for text + type classification) aligned with dataset order
     with open(Path(cfg["data_root"]) / "questions" / "val_questions.json") as f:
         raw_questions = json.load(f)["questions"]
 
@@ -89,29 +87,29 @@ def run_analysis(cfg: dict, device: torch.device, checkpoint: str = "model_best.
         logits = model(images, question_ids)
         preds = logits.argmax(dim=-1)
 
+        pred_answer = preds[:, ANSWER_POSITION]
+        true_answer = answer_ids[:, ANSWER_POSITION]
+
         bsz = images.shape[0]
         for i in range(bsz):
             q_text = raw_questions[idx]["question"]
             q_type = classify_question(q_text)
 
-            mask = answer_ids[i] != tokenizer.pad_id
-            correct = ((preds[i] == answer_ids[i]) & mask).sum().item()
-            total = mask.sum().item()
-            is_fully_correct = correct == total and total > 0
+            is_correct = pred_answer[i].item() == true_answer[i].item()
 
             type_total[q_type] += 1
-            if is_fully_correct:
+            if is_correct:
                 type_correct[q_type] += 1
 
             if len(examples) < n_examples:
-                pred_text = tokenizer.decode(preds[i].tolist())
-                true_text = tokenizer.decode(answer_ids[i].tolist())
+                pred_word = tokenizer.decode([pred_answer[i].item()])
+                true_word = tokenizer.decode([true_answer[i].item()])
                 examples.append({
                     "question": q_text,
                     "question_type": q_type,
-                    "predicted": pred_text,
-                    "true": true_text,
-                    "correct": is_fully_correct,
+                    "predicted": pred_word,
+                    "true": true_word,
+                    "correct": is_correct,
                 })
 
             idx += 1
