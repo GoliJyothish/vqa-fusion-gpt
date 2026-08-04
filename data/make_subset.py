@@ -17,8 +17,8 @@ from pathlib import Path
 # ---- CONFIG: adjust these paths/sizes if needed ----
 SOURCE_DIR = Path("data/clevr_download")   # where you extracted the 18GB zip
 DEST_DIR = Path("data/clevr_subset")       # where the trimmed subset goes
-N_TRAIN = 8000
-N_VAL = 1000
+N_TRAIN = 20000
+N_VAL = 2000
 # ------------------------------------------------------
 
 
