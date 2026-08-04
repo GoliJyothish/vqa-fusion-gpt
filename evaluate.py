@@ -3,6 +3,13 @@ Runs accuracy evaluation for a trained model and, if both fusion variants
 have been trained, produces the concat-vs-cross-attention comparison table
 that is the core novelty result of this project.
 
+IMPORTANT: CLEVR answers are single words, encoded as [BOS, answer, EOS,
+PAD, PAD, ...]. Accuracy is scored ONLY on the answer position (index 1,
+right after BOS) — NOT across the whole padded sequence. Scoring the whole
+sequence inflates accuracy artificially, since BOS/EOS/PAD are trivially
+predictable and dominate the sequence length, masking whether the model
+actually gets the real answer word right.
+
 Usage:
     python evaluate.py --config configs/concat_fusion.yaml
     python evaluate.py --compare configs/concat_fusion.yaml configs/cross_attn_fusion.yaml
@@ -19,11 +26,14 @@ from models.fusion import VQAFusionModel
 from data.clevr_dataset import CLEVRVQADataset
 from train import load_config, get_tokenizer
 
+ANSWER_POSITION = 1  # index right after BOS token
+
 
 @torch.no_grad()
 def evaluate_accuracy(cfg: dict, device: torch.device, checkpoint: str = "model_best.pt") -> float:
     tokenizer = get_tokenizer(cfg["data_root"])
     cfg["vocab_size"] = tokenizer.vocab_size
+
     val_ds = CLEVRVQADataset(
         cfg["data_root"], "val", tokenizer, image_size=cfg["image_size"], max_len=cfg["max_seq_len"]
     )
@@ -52,9 +62,12 @@ def evaluate_accuracy(cfg: dict, device: torch.device, checkpoint: str = "model_
         logits = model(images, question_ids)
         preds = logits.argmax(dim=-1)
 
-        mask = answer_ids != tokenizer.pad_id
-        correct += ((preds == answer_ids) & mask).sum().item()
-        total += mask.sum().item()
+        # Only score the actual answer word position, not BOS/EOS/PAD
+        pred_answer = preds[:, ANSWER_POSITION]
+        true_answer = answer_ids[:, ANSWER_POSITION]
+
+        correct += (pred_answer == true_answer).sum().item()
+        total += true_answer.size(0)
 
     return correct / total if total > 0 else 0.0
 
@@ -63,6 +76,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, help="single config to evaluate")
     parser.add_argument("--compare", nargs=2, metavar=("CONFIG_A", "CONFIG_B"))
+    parser.add_argument("--checkpoint", default="model_best.pt")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,9 +85,9 @@ def main():
         results = {}
         for path in args.compare:
             cfg = load_config(path)
-            acc = evaluate_accuracy(cfg, device)
+            acc = evaluate_accuracy(cfg, device, checkpoint=args.checkpoint)
             results[cfg["fusion"]] = acc
-            print(f"{cfg['fusion']}: accuracy = {acc:.4f}")
+            print(f"{cfg['fusion']}: answer accuracy = {acc:.4f}")
 
         Path("results").mkdir(exist_ok=True)
         with open("results/comparison.json", "w") as f:
@@ -82,8 +96,8 @@ def main():
 
     elif args.config:
         cfg = load_config(args.config)
-        acc = evaluate_accuracy(cfg, device)
-        print(f"{cfg['fusion']}: accuracy = {acc:.4f}")
+        acc = evaluate_accuracy(cfg, device, checkpoint=args.checkpoint)
+        print(f"{cfg['fusion']}: answer accuracy = {acc:.4f}")
 
     else:
         parser.error("Provide --config or --compare")
