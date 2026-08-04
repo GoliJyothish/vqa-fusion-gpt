@@ -52,6 +52,7 @@ def classify_question(question: str) -> str:
 @torch.no_grad()
 def run_analysis(cfg: dict, device: torch.device, checkpoint: str = "model_best.pt", n_examples: int = 8):
     tokenizer = get_tokenizer(cfg["data_root"])
+    cfg["vocab_size"] = tokenizer.vocab_size  # match checkpoint vocab size
     val_ds = CLEVRVQADataset(
         cfg["data_root"], "val", tokenizer, image_size=cfg["image_size"], max_len=cfg["max_seq_len"]
     )
