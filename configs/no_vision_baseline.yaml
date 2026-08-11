@@ -1,0 +1,15 @@
+fusion: none
+data_root: data/clevr_subset
+vocab_size: 512  # auto-overridden at runtime by the tokenizer's actual vocab size
+dim: 256
+n_layers: 6
+n_heads: 4
+max_seq_len: 64
+image_size: 128
+batch_size: 32
+lr: 0.0003
+epochs: 15
+vision_backbone: resnet18
+freeze_vision: true
+dropout: 0.2
+output_dir: results/no_vision_baseline

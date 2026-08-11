@@ -1,8 +1,11 @@
 """
 Top-level VQA model: wires the vision encoder into the GPT decoder using
-whichever fusion strategy is selected. This is the module your train.py
-and evaluate.py should import — it's what makes swapping "concat" vs.
-"cross_attn" a one-line config change instead of a code change.
+whichever fusion strategy is selected.
+
+fusion="none" is a text-only control baseline — the vision encoder is not
+even called, guaranteeing zero image information reaches the decoder. Used
+to verify the "concat"/"cross_attn" models are genuinely using the image,
+not just exploiting language-only patterns in the question phrasing.
 """
 
 import torch.nn as nn
@@ -25,9 +28,15 @@ class VQAFusionModel(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-        self.vision_encoder = VisionEncoder(
-            backbone=vision_backbone, out_dim=dim, freeze=freeze_vision
-        )
+        self.fusion = fusion
+
+        if fusion != "none":
+            self.vision_encoder = VisionEncoder(
+                backbone=vision_backbone, out_dim=dim, freeze=freeze_vision
+            )
+        else:
+            self.vision_encoder = None
+
         self.decoder = GPTDecoder(
             vocab_size=vocab_size,
             dim=dim,
@@ -39,5 +48,8 @@ class VQAFusionModel(nn.Module):
         )
 
     def forward(self, images, token_ids):
-        image_features = self.vision_encoder(images)
+        if self.vision_encoder is not None:
+            image_features = self.vision_encoder(images)
+        else:
+            image_features = None  # "none" mode: text-only, image is never even encoded
         return self.decoder(token_ids, image_features=image_features)

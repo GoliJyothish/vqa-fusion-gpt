@@ -1,11 +1,17 @@
 """
 Custom GPT-style decoder.
 
-This is meant to be swapped out for the decoder from your LLM-from-scratch
-project — copy that implementation's blocks in here and extend them with
-the optional cross-attention layer below. Keeping it self-contained here
-for now so the fusion pipeline is testable end-to-end before you wire in
-your own weights/architecture.
+Supports three fusion modes:
+    "concat"     — image features prepended to the text token sequence
+    "cross_attn" — text tokens cross-attend to image features at every layer
+    "none"       — TEXT-ONLY control baseline. No image information is used
+                   at all. This exists purely as a diagnostic: if "none"
+                   performs similarly to "concat"/"cross_attn", it means
+                   the fusion mechanisms aren't actually contributing
+                   useful visual information, and the model is just
+                   pattern-matching on question phrasing. This mirrors the
+                   "language-only" baseline reported in the original VQA
+                   paper (Antol et al., 2015).
 """
 
 import math
@@ -26,7 +32,7 @@ class SelfAttention(nn.Module):
     def forward(self, x, causal_mask=None):
         b, t, d = x.shape
         qkv = self.qkv(x).reshape(b, t, 3, self.n_heads, self.head_dim)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4)  # each: (B, heads, T, head_dim)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4)
         attn = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         if causal_mask is not None:
             attn = attn.masked_fill(causal_mask == 0, float("-inf"))
@@ -106,11 +112,11 @@ class GPTDecoder(nn.Module):
         n_layers: int = 6,
         n_heads: int = 4,
         max_seq_len: int = 64,
-        fusion: str = "concat",  # "concat" or "cross_attn"
+        fusion: str = "concat",  # "concat", "cross_attn", or "none"
         dropout: float = 0.1,
     ):
         super().__init__()
-        assert fusion in ("concat", "cross_attn")
+        assert fusion in ("concat", "cross_attn", "none")
         self.fusion = fusion
         self.dim = dim
 
@@ -130,21 +136,24 @@ class GPTDecoder(nn.Module):
         """
         Args:
             token_ids: (B, T) question/answer token ids
-            image_features: (B, n_regions, dim) from VisionEncoder
+            image_features: (B, n_regions, dim) from VisionEncoder.
+                Ignored entirely when fusion == "none".
         """
         b, t = token_ids.shape
         pos = torch.arange(t, device=token_ids.device).unsqueeze(0)
         x = self.token_emb(token_ids) + self.pos_emb(pos)
         x = self.emb_dropout(x)
 
-        if self.fusion == "concat" and image_features is not None:
+        use_image = self.fusion != "none" and image_features is not None
+
+        if self.fusion == "concat" and use_image:
             x = torch.cat([image_features, x], dim=1)
             t = x.shape[1]
 
         causal_mask = torch.tril(torch.ones(t, t, device=token_ids.device)).view(1, 1, t, t)
 
         for block in self.blocks:
-            if self.fusion == "cross_attn":
+            if self.fusion == "cross_attn" and use_image:
                 x = block(x, causal_mask, image_features=image_features)
             else:
                 x = block(x, causal_mask)
@@ -152,8 +161,7 @@ class GPTDecoder(nn.Module):
         x = self.ln_f(x)
         logits = self.head(x)
 
-        if self.fusion == "concat" and image_features is not None:
-            # drop the image-token positions, keep only text positions for loss
+        if self.fusion == "concat" and use_image:
             n_img = image_features.shape[1]
             logits = logits[:, n_img:, :]
 
