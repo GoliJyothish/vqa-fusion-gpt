@@ -8,7 +8,6 @@ max_seq_len: 64
 image_size: 224
 batch_size: 32
 lr: 0.0003
-vision_lr_scale: 0.1
 epochs: 15
 vision_backbone: resnet18
 freeze_vision: partial
