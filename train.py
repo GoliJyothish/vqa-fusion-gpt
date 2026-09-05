@@ -1,12 +1,20 @@
 """
 Training entry point.
 
-Usage (Colab or terminal, after `pip install -r requirements.txt`):
+Usage:
     python train.py --config configs/concat_fusion.yaml
     python train.py --config configs/cross_attn_fusion.yaml
+    python train.py --config configs/no_vision_baseline.yaml
 
-Run both configs to produce the comparison numbers for the novelty
-evaluation (see evaluate.py).
+Uses differential learning rates: any unfrozen pretrained vision layers
+(e.g. ResNet's layer4, when freeze_vision="partial") get a smaller LR
+than the rest of the model. This is standard fine-tuning practice —
+pretrained weights already encode useful structure, so they should be
+nudged gently rather than updated at the same aggressive rate as
+randomly-initialized layers (the decoder, projection, etc.), which need
+larger updates to learn from scratch. Using one shared LR for both risks
+either being too slow for the decoder or too disruptive for the
+pretrained vision features.
 """
 
 import argparse
@@ -28,11 +36,6 @@ def load_config(path: str) -> dict:
 
 
 def get_tokenizer(data_root: str):
-    """
-    Builds (or loads) the CLEVR word-level tokenizer. Vocab is learned
-    from the training split's questions + answers, then reused for val
-    so token ids stay consistent across splits.
-    """
     from data.tokenizer import CLEVRTokenizer, build_tokenizer_from_clevr
 
     vocab_path = Path(data_root) / "vocab.json"
@@ -47,13 +50,50 @@ def get_tokenizer(data_root: str):
     return tokenizer
 
 
+def build_optimizer(model: nn.Module, base_lr: float, vision_lr_scale: float = 0.1):
+    """
+    Splits parameters into two groups:
+      - unfrozen pretrained vision layers (e.g. ResNet layer4): base_lr * vision_lr_scale
+      - everything else (decoder, projection, embeddings): base_lr
+
+    vision_lr_scale=0.1 means the vision fine-tuning LR is 10x smaller
+    than the rest of the model's LR — a common starting point for
+    fine-tuning pretrained backbones.
+    """
+    vision_params = []
+    other_params = []
+
+    vision_encoder = getattr(model, "vision_encoder", None)
+    vision_param_ids = set()
+    if vision_encoder is not None:
+        vision_param_ids = {id(p) for p in vision_encoder.parameters()}
+
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        if id(p) in vision_param_ids:
+            vision_params.append(p)
+        else:
+            other_params.append(p)
+
+    param_groups = [{"params": other_params, "lr": base_lr}]
+    if vision_params:
+        param_groups.append({"params": vision_params, "lr": base_lr * vision_lr_scale})
+        print(f"Optimizer: {len(other_params)} params @ lr={base_lr}, "
+              f"{len(vision_params)} vision params @ lr={base_lr * vision_lr_scale}")
+    else:
+        print(f"Optimizer: {len(other_params)} params @ lr={base_lr} (no trainable vision params)")
+
+    return torch.optim.AdamW(param_groups)
+
+
 def train(config_path: str):
     cfg = load_config(config_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     tokenizer = get_tokenizer(cfg["data_root"])
-    cfg["vocab_size"] = tokenizer.vocab_size  # override config value with actual learned vocab size
+    cfg["vocab_size"] = tokenizer.vocab_size
 
     train_ds = CLEVRVQADataset(
         cfg["data_root"], "train", tokenizer, image_size=cfg["image_size"], max_len=cfg["max_seq_len"]
@@ -77,9 +117,7 @@ def train(config_path: str):
         dropout=cfg.get("dropout", 0.1),
     ).to(device)
 
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=cfg["lr"]
-    )
+    optimizer = build_optimizer(model, base_lr=cfg["lr"], vision_lr_scale=cfg.get("vision_lr_scale", 0.1))
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_id)
 
     out_dir = Path(cfg["output_dir"])
@@ -97,7 +135,6 @@ def train(config_path: str):
             answer_ids = batch["answer_ids"].to(device)
 
             logits = model(images, question_ids)
-            # align logits/answer length; adjust slicing to your tokenization scheme
             loss = loss_fn(logits.reshape(-1, logits.size(-1)), answer_ids.reshape(-1))
 
             optimizer.zero_grad()
@@ -128,7 +165,7 @@ def train(config_path: str):
             best_epoch = epoch + 1
             torch.save(model.state_dict(), out_dir / "model_best.pt")
 
-    torch.save(model.state_dict(), out_dir / "model.pt")  # final-epoch checkpoint
+    torch.save(model.state_dict(), out_dir / "model.pt")
     history["best_val_loss"] = best_val_loss
     history["best_epoch"] = best_epoch
     with open(out_dir / "history.json", "w") as f:
