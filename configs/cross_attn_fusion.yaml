@@ -5,11 +5,11 @@ dim: 256
 n_layers: 6
 n_heads: 4
 max_seq_len: 64
-image_size: 128
+image_size: 224
 batch_size: 32
 lr: 0.0003
 epochs: 15
 vision_backbone: resnet18
-freeze_vision: true
+freeze_vision: partial
 dropout: 0.2
 output_dir: results/cross_attn_fusion
